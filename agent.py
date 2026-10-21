@@ -7,6 +7,24 @@ load_dotenv()
 client = OpenAI()
 MODEL = "gpt-5-mini"
 
+RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "answer",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "answer": {"type": "string"},
+                "tools_used": {"type": "array", "items": {"type": "string"}},
+                "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            },
+            "required": ["answer", "tools_used", "confidence"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 # --- Tools: plain Python functions ---
 def calculator(expression: str) -> str:
     try:
@@ -51,31 +69,35 @@ TOOLS = [
                            "required": ["header_string"]}}},
 ]
 
-def run_agent(task: str, max_steps: int = 5):
+def run_agent(task: str, max_steps: int = 8):
     messages = [
         {"role": "system", "content": "You are an agent. Use tools when needed. Be concise."},
         {"role": "user", "content": task},
     ]
     for step in range(max_steps):
         resp = client.chat.completions.create(
-            model=MODEL, messages=messages, tools=TOOLS, reasoning_effort="low")
+            model=MODEL, messages=messages, tools=TOOLS, reasoning_effort="low",response_format=RESPONSE_FORMAT,)
         msg = resp.choices[0].message
         messages.append(msg)
 
         if not msg.tool_calls:  # no more tools needed, so this is the final answer
-            print(f"\n✅ Final answer (step {step + 1}):\n{msg.content}")
-            return msg.content
+            result = json.loads(msg.content)
+            print(f"\n✅ Final answer (step {step + 1}):")
+            print(json.dumps(result, indent=2))
+            return result
 
         for call in msg.tool_calls:
-            f_name = call.function.name
+            name = call.function.name
             try:
                 args = json.loads(call.function.arguments)
-                print(f"🔧 Step {step + 1}: {call.function.name}({args})")
-                result = TOOLS_IMPL[call.function.name](**args)
-                messages.append({"role": "tool", "tool_call_id": call.id, "content": str(result)})
+                print(f"🔧 Step {step + 1}: {name}({args})")
+                if name not in TOOLS_IMPL:
+                    result = f"Error: unknown tool '{name}'. Available: {list(TOOLS_IMPL)}"
+                else:
+                    result = TOOLS_IMPL[name](**args)
             except Exception as e:
-                result = f"Error running {f_name}: {e}"
-                messages.append({"role": "tool", "tool_call_id": call.id, "content": str(result)})
+                result = f"Error running {name}: {e}"
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": str(result)})
 
     print("⚠️ Hit max steps")
 
